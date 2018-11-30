@@ -13,8 +13,7 @@ use tty::move_cursor_up;
 #[derive(Debug)]
 enum StateMessage {
     Message(String, usize),
-    BarDone(usize),
-    CreateBar,
+    BarFinish(usize),
     Finish,
 }
 
@@ -24,6 +23,7 @@ pub struct MultiBarPrinter<T: Write> {
 
     lines: Arc<RwLock<VecDeque<String>>>,
     offset: usize,
+    last_len: usize,
 }
 impl<T: Write> MultiBarPrinter<T> {
     pub fn listen(&mut self) {
@@ -31,6 +31,14 @@ impl<T: Write> MultiBarPrinter<T> {
             // receive message
             let msg = self.receiver.recv().unwrap();
             let mut lines = self.lines.write().unwrap();
+
+            let len = lines.len();
+            if len > self.last_len {
+                for _ in 0..(len - self.last_len) {
+                    printfl!(self.handle, "\n");
+                }
+            }
+            self.last_len = len;
             match msg {
                 StateMessage::Message(message, level) => {
                     lines[level - self.offset] = message;
@@ -40,17 +48,18 @@ impl<T: Write> MultiBarPrinter<T> {
                     let mut first = true;
                     for l in lines.iter() {
                         if first {
-                            out += &move_cursor_up(lines.len());
+                            out += &move_cursor_up(len);
                             first = false;
                         }
                         out.push_str(&format!("\r{}\n", l));
                     }
                     printfl!(self.handle, "{}", out);
                 }
-                StateMessage::BarDone(level) => {
+                StateMessage::BarFinish(level) => {
                     lines[level - self.offset] = "".to_owned(); // mark line as useless
 
                     // pop the first line if it is useless
+                    // TODO way to remove flat println lines
                     loop {
                         if lines.get(0).map(|line| line == "").unwrap_or(false) {
                             self.offset += 1;
@@ -59,9 +68,6 @@ impl<T: Write> MultiBarPrinter<T> {
                             break;
                         }
                     }
-                }
-                StateMessage::CreateBar => {
-                    printfl!(self.handle, "\n");
                 }
                 StateMessage::Finish => {
                     break;
@@ -148,9 +154,10 @@ impl<T: Write> MultiBar<T> {
             sender,
             printer: Some(MultiBarPrinter {
                 receiver,
-                offset: 0,
                 lines,
                 handle,
+                offset: 0,
+                last_len: 0,
             }),
         }
     }
@@ -219,7 +226,6 @@ impl<T: Write> MultiBar<T> {
     /// ```
     pub fn create_bar(&mut self, total: u64) -> ProgressBar<Pipe> {
         self.println("");
-        self.sender.send(StateMessage::CreateBar).unwrap(); // just prints a newline
 
         let mut p = ProgressBar::on(
             Pipe {
@@ -310,7 +316,7 @@ impl Write for Pipe {
 
         // finish method emits empty string
         let msg = if s == "" {
-            StateMessage::BarDone(self.level)
+            StateMessage::BarFinish(self.level)
         } else {
             StateMessage::Message(s, self.level)
         };
