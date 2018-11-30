@@ -14,7 +14,6 @@ use tty::move_cursor_up;
 enum StateMessage {
     ProgressMessage(String, usize),
     BarFinished(usize),
-    Finish,
 }
 
 // active, message
@@ -89,22 +88,130 @@ impl<T: Write> MultiBarPrinter<T> {
                             break;
                         }
                     }
-                }
-                StateMessage::Finish => {
-                    break;
+
+                    // if we have no more active progress bars
+                    if lines.iter().filter(|line| line.0).count() == 0 {
+                        // stop listening
+
+                        break;
+                    }
                 }
             }
         }
     }
 }
 
-pub struct MultiBar<T: Write> {
-    nlines: usize,
+/// A clonable struct that acts the same as `MultiBar`, minus `listen()`
+pub struct MultiBarSender {
+    nlines: Arc<RwLock<usize>>,
     lines: Arc<RwLock<VecDeque<Line>>>,
-
     sender: Sender<StateMessage>,
+}
 
-    printer: Option<MultiBarPrinter<T>>,
+impl MultiBarSender {
+    /// println used to add text lines between the bars.
+    /// for example: you could add a header to your application,
+    /// or text separators between bars.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use pbr::MultiBar;
+    ///
+    /// let mut mb = MultiBar::new();
+    /// mb.println("Application header:");
+    ///
+    /// # let count = 250;
+    /// let mut p1 = mb.create_bar(count);
+    /// // ...
+    ///
+    /// mb.println("Text line between bar1 and bar2");
+    ///
+    /// let mut p2 = mb.create_bar(count);
+    /// // ...
+    ///
+    /// mb.println("Text line between bar2 and bar3");
+    ///
+    /// // ...
+    /// // ...
+    /// mb.listen();
+    /// ```
+    pub fn println(&mut self, s: &str) {
+        self.lines
+            .write()
+            .unwrap()
+            .push_back(Line(false, s.to_owned()));
+
+        *self.nlines.write().unwrap() += 1;
+    }
+
+    /// create_bar creates new `ProgressBar` with `Pipe` as the writer.
+    ///
+    /// The ordering of the method calls is important. it means that in
+    /// the first call, you get a progress bar in level 1, in the 2nd call,
+    /// you get a progress bar in level 2, and so on.
+    ///
+    /// ProgressBar that finish its work, must call `finish()` (or `finish_print`)
+    /// to notify the `MultiBar` about it.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use pbr::MultiBar;
+    ///
+    /// let mut mb = MultiBar::new();
+    /// # let (count1, count2, count3) = (250, 62500, 15625000);
+    ///
+    /// // progress bar in level 1
+    /// let mut p1 = mb.create_bar(count1);
+    /// // ...
+    ///
+    /// // progress bar in level 2
+    /// let mut p2 = mb.create_bar(count2);
+    /// // ...
+    ///
+    /// // progress bar in level 3
+    /// let mut p3 = mb.create_bar(count3);
+    ///
+    /// // ...
+    /// mb.listen();
+    /// ```
+    pub fn create_bar(&mut self, total: u64) -> ProgressBar<Pipe> {
+        self.lines
+            .write()
+            .unwrap()
+            .push_back(Line(true, "".to_owned()));
+
+        let mut nlines = self.nlines.write().unwrap();
+        let level = *nlines;
+        *nlines += 1;
+
+        let mut p = ProgressBar::on(
+            Pipe {
+                level,
+                sender: self.sender.clone(),
+            },
+            total,
+        );
+        p.is_multibar = true;
+        p.add(0);
+        p
+    }
+}
+
+impl Clone for MultiBarSender {
+    fn clone(&self) -> Self {
+        MultiBarSender {
+            nlines: self.nlines.clone(),
+            lines: self.lines.clone(),
+            sender: self.sender.clone(),
+        }
+    }
+}
+
+pub struct MultiBar<T: Write> {
+    mbs: MultiBarSender,
+    mbp: MultiBarPrinter<T>,
 }
 
 impl MultiBar<Stdout> {
@@ -172,105 +279,19 @@ impl<T: Write> MultiBar<T> {
         let lines = Arc::new(RwLock::new(VecDeque::new()));
 
         MultiBar {
-            nlines: 0,
-            lines: lines.clone(),
-            sender,
-            printer: Some(MultiBarPrinter {
+            mbs: MultiBarSender {
+                nlines: Arc::new(RwLock::new(0)),
+                lines: lines.clone(),
+                sender,
+            },
+            mbp: MultiBarPrinter {
                 receiver,
                 lines,
                 handle,
                 offset: 0,
                 last_len: 0,
-            }),
-        }
-    }
-
-    /// println used to add text lines between the bars.
-    /// for example: you could add a header to your application,
-    /// or text separators between bars.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use pbr::MultiBar;
-    ///
-    /// let mut mb = MultiBar::new();
-    /// mb.println("Application header:");
-    ///
-    /// # let count = 250;
-    /// let mut p1 = mb.create_bar(count);
-    /// // ...
-    ///
-    /// mb.println("Text line between bar1 and bar2");
-    ///
-    /// let mut p2 = mb.create_bar(count);
-    /// // ...
-    ///
-    /// mb.println("Text line between bar2 and bar3");
-    ///
-    /// // ...
-    /// // ...
-    /// mb.listen();
-    /// ```
-    pub fn println(&mut self, s: &str) {
-        self.lines
-            .write()
-            .unwrap()
-            .push_back(Line(false, s.to_owned()));
-
-        self.nlines += 1;
-    }
-
-    /// create_bar creates new `ProgressBar` with `Pipe` as the writer.
-    ///
-    /// The ordering of the method calls is important. it means that in
-    /// the first call, you get a progress bar in level 1, in the 2nd call,
-    /// you get a progress bar in level 2, and so on.
-    ///
-    /// ProgressBar that finish its work, must call `finish()` (or `finish_print`)
-    /// to notify the `MultiBar` about it.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use pbr::MultiBar;
-    ///
-    /// let mut mb = MultiBar::new();
-    /// # let (count1, count2, count3) = (250, 62500, 15625000);
-    ///
-    /// // progress bar in level 1
-    /// let mut p1 = mb.create_bar(count1);
-    /// // ...
-    ///
-    /// // progress bar in level 2
-    /// let mut p2 = mb.create_bar(count2);
-    /// // ...
-    ///
-    /// // progress bar in level 3
-    /// let mut p3 = mb.create_bar(count3);
-    ///
-    /// // ...
-    /// mb.listen();
-    /// ```
-    pub fn create_bar(&mut self, total: u64) -> ProgressBar<Pipe> {
-        self.lines
-            .write()
-            .unwrap()
-            .push_back(Line(true, "".to_owned()));
-
-        let level = self.nlines;
-        self.nlines += 1;
-
-        let mut p = ProgressBar::on(
-            Pipe {
-                level,
-                sender: self.sender.clone(),
             },
-            total,
-        );
-        p.is_multibar = true;
-        p.add(0);
-        p
+        }
     }
 
     /// listen start listen to all bars changes.
@@ -302,17 +323,7 @@ impl<T: Write> MultiBar<T> {
     /// // ...
     /// ```
     pub fn listen(&mut self) {
-        self.get_printer().listen();
-    }
-
-    /// Get a MultiBarPrinter to allow adding more ProgressBars while listening
-    pub fn get_printer(&mut self) -> MultiBarPrinter<T> {
-        self.printer.take().unwrap()
-    }
-
-    /// Finish and stop printing
-    pub fn finish(&mut self) {
-        self.sender.send(StateMessage::Finish).unwrap();
+        self.mbp.listen();
     }
 }
 
@@ -322,20 +333,11 @@ impl Default for MultiBar<Stdout> {
     }
 }
 
-// impl<T: Write> Clone for MultiBar<T> {
-//     fn clone(&self) -> Self {
-//         MultiBar {
-//             nbars: self.nbars, // maybe make these atomic
-//             nlines: self.nlines,
-//             sender: self.sender.clone(),
-//             printer: None,
-//         }
-//     }
-// }
+impl<T: Write> std::ops::Deref for MultiBar<T> {
+    type Target = MultiBarSender;
 
-impl<T: Write> Drop for MultiBar<T> {
-    fn drop(&mut self) {
-        self.sender.send(StateMessage::Finish).unwrap();
+    fn deref(&self) -> &MultiBarSender {
+        &self.mbs
     }
 }
 
