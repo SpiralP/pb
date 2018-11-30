@@ -115,7 +115,7 @@ extern crate time;
 mod multi;
 mod pb;
 mod tty;
-pub use multi::{MultiBar, Pipe};
+pub use multi::{MultiBar, MultiBarSender, Pipe};
 pub use pb::{ProgressBar, Units};
 use std::io::{stdout, Stdout, Write};
 
