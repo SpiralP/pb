@@ -12,16 +12,19 @@ use tty::move_cursor_up;
 // between MultiBar and its bars
 #[derive(Debug)]
 enum StateMessage {
-    Message(String, usize),
-    BarFinish(usize),
+    ProgressMessage(String, usize),
+    BarFinished(usize),
     Finish,
 }
+
+// active, message
+struct Line(bool, String);
 
 pub struct MultiBarPrinter<T: Write> {
     receiver: Receiver<StateMessage>,
     handle: T,
 
-    lines: Arc<RwLock<VecDeque<String>>>,
+    lines: Arc<RwLock<VecDeque<Line>>>,
     offset: usize,
     last_len: usize,
 }
@@ -31,37 +34,55 @@ impl<T: Write> MultiBarPrinter<T> {
             // receive message
             let msg = self.receiver.recv().unwrap();
             let mut lines = self.lines.write().unwrap();
-
             let len = lines.len();
+
+            // when new lines are added, print newlines to shift scrollback up
             if len > self.last_len {
                 for _ in 0..(len - self.last_len) {
                     printfl!(self.handle, "\n");
                 }
             }
             self.last_len = len;
-            match msg {
-                StateMessage::Message(message, level) => {
-                    lines[level - self.offset] = message;
 
-                    // and draw
+            match msg {
+                StateMessage::ProgressMessage(message, level) => {
+                    debug_assert!(
+                        lines[level - self.offset].0,
+                        "ProcessMessage on an inactive Line"
+                    );
+
+                    lines[level - self.offset] = Line(true, message);
+
+                    // print each line
                     let mut out = String::new();
                     let mut first = true;
-                    for l in lines.iter() {
+                    for Line(_active, message) in lines.iter() {
                         if first {
                             out += &move_cursor_up(len);
                             first = false;
                         }
-                        out.push_str(&format!("\r{}\n", l));
+
+                        out.push_str(&format!("{}\n", message));
                     }
                     printfl!(self.handle, "{}", out);
                 }
-                StateMessage::BarFinish(level) => {
-                    lines[level - self.offset] = "".to_owned(); // mark line as useless
+                StateMessage::BarFinished(level) => {
+                    debug_assert!(
+                        lines[level - self.offset].0,
+                        "BarFinished on an inactive line"
+                    );
+
+                    let message = lines[level - self.offset].1.to_owned();
+                    // mark line as useless
+                    lines[level - self.offset] = Line(false, message);
 
                     // pop the first line if it is useless
-                    // TODO way to remove flat println lines
                     loop {
-                        if lines.get(0).map(|line| line == "").unwrap_or(false) {
+                        if lines
+                            .get(0)
+                            .map(|Line(active, _message)| !active)
+                            .unwrap_or(false)
+                        {
                             self.offset += 1;
                             lines.pop_front();
                         } else {
@@ -78,7 +99,8 @@ impl<T: Write> MultiBarPrinter<T> {
 }
 
 pub struct MultiBar<T: Write> {
-    lines: Arc<RwLock<VecDeque<String>>>,
+    nlines: usize,
+    lines: Arc<RwLock<VecDeque<Line>>>,
 
     sender: Sender<StateMessage>,
 
@@ -150,6 +172,7 @@ impl<T: Write> MultiBar<T> {
         let lines = Arc::new(RwLock::new(VecDeque::new()));
 
         MultiBar {
+            nlines: 0,
             lines: lines.clone(),
             sender,
             printer: Some(MultiBarPrinter {
@@ -190,7 +213,12 @@ impl<T: Write> MultiBar<T> {
     /// mb.listen();
     /// ```
     pub fn println(&mut self, s: &str) {
-        self.lines.write().unwrap().push_back(s.to_owned());
+        self.lines
+            .write()
+            .unwrap()
+            .push_back(Line(false, s.to_owned()));
+
+        self.nlines += 1;
     }
 
     /// create_bar creates new `ProgressBar` with `Pipe` as the writer.
@@ -225,11 +253,17 @@ impl<T: Write> MultiBar<T> {
     /// mb.listen();
     /// ```
     pub fn create_bar(&mut self, total: u64) -> ProgressBar<Pipe> {
-        self.println("");
+        self.lines
+            .write()
+            .unwrap()
+            .push_back(Line(true, "".to_owned()));
+
+        let level = self.nlines;
+        self.nlines += 1;
 
         let mut p = ProgressBar::on(
             Pipe {
-                level: self.lines.read().unwrap().len() - 1,
+                level,
                 sender: self.sender.clone(),
             },
             total,
@@ -316,9 +350,9 @@ impl Write for Pipe {
 
         // finish method emits empty string
         let msg = if s == "" {
-            StateMessage::BarFinish(self.level)
+            StateMessage::BarFinished(self.level)
         } else {
-            StateMessage::Message(s, self.level)
+            StateMessage::ProgressMessage(s, self.level)
         };
 
         self.sender.send(msg).unwrap();
