@@ -40,7 +40,7 @@ pub struct ProgressBar<T: Write> {
     start_time: SteadyTime,
     units: Units,
     pub total: u64,
-    current: u64,
+    pub current: u64,
     bar_start: String,
     bar_current: String,
     bar_current_n: String,
@@ -477,6 +477,12 @@ impl<T: Write> Write for ProgressBar<T> {
     }
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+impl<T: Write> Drop for ProgressBar<T> {
+    fn drop(&mut self) {
+        self.finish();
     }
 }
 
