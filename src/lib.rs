@@ -111,25 +111,26 @@ macro_rules! printfl {
     }}
 }
 
-#[macro_use]
 extern crate time;
-mod tty;
-mod pb;
 mod multi;
-pub use pb::{ProgressBar, Units};
+mod pb;
+mod tty;
 pub use multi::{MultiBar, Pipe};
-use std::io::{Write, Stdout, stdout};
+pub use pb::{ProgressBar, Units};
+use std::io::{stdout, Stdout, Write};
 
 pub struct PbIter<T, I>
-    where I: Iterator,
-          T: Write
+where
+    I: Iterator,
+    T: Write,
 {
     iter: I,
     progress_bar: ProgressBar<T>,
 }
 
 impl<I> PbIter<Stdout, I>
-    where I: Iterator
+where
+    I: Iterator,
 {
     pub fn new(iter: I) -> Self {
         Self::on(stdout(), iter)
@@ -137,21 +138,23 @@ impl<I> PbIter<Stdout, I>
 }
 
 impl<T, I> PbIter<T, I>
-    where I: Iterator,
-          T: Write
+where
+    I: Iterator,
+    T: Write,
 {
     pub fn on(handle: T, iter: I) -> Self {
         let size = iter.size_hint().0;
         PbIter {
-            iter: iter,
+            iter,
             progress_bar: ProgressBar::on(handle, size as u64),
         }
     }
 }
 
 impl<T, I> Iterator for PbIter<T, I>
-    where I: Iterator,
-          T: Write
+where
+    I: Iterator,
+    T: Write,
 {
     type Item = I::Item;
 

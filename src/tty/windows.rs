@@ -1,7 +1,7 @@
-extern crate winapi;
 extern crate kernel32;
+extern crate winapi;
 
-use super::{Width, Height};
+use super::{Height, Width};
 
 /// Returns the size of the terminal, if available.
 ///
@@ -24,19 +24,24 @@ pub fn move_cursor_up(n: usize) -> String {
     use self::winapi::COORD;
     if let Some((hand, csbi)) = get_csbi() {
         unsafe {
-            SetConsoleCursorPosition(hand,
-                                     COORD {
-                                         X: 0,
-                                         Y: csbi.dwCursorPosition.Y - n as i16,
-                                     });
+            SetConsoleCursorPosition(
+                hand,
+                COORD {
+                    X: 0,
+                    Y: csbi.dwCursorPosition.Y - n as i16,
+                },
+            );
         }
     }
     "".to_string()
 }
 
-fn get_csbi() -> Option<(self::winapi::HANDLE, self::winapi::CONSOLE_SCREEN_BUFFER_INFO)> {
+fn get_csbi() -> Option<(
+    self::winapi::HANDLE,
+    self::winapi::CONSOLE_SCREEN_BUFFER_INFO,
+)> {
+    use self::kernel32::{GetConsoleScreenBufferInfo, GetStdHandle};
     use self::winapi::HANDLE;
-    use self::kernel32::{GetStdHandle, GetConsoleScreenBufferInfo};
     use self::winapi::STD_OUTPUT_HANDLE;
     use self::winapi::{CONSOLE_SCREEN_BUFFER_INFO, COORD, SMALL_RECT};
 
@@ -44,8 +49,8 @@ fn get_csbi() -> Option<(self::winapi::HANDLE, self::winapi::CONSOLE_SCREEN_BUFF
 
     let zc = COORD { X: 0, Y: 0 };
     let mut csbi = CONSOLE_SCREEN_BUFFER_INFO {
-        dwSize: zc.clone(),
-        dwCursorPosition: zc.clone(),
+        dwSize: zc,
+        dwCursorPosition: zc,
         wAttributes: 0,
         srWindow: SMALL_RECT {
             Left: 0,

@@ -1,9 +1,9 @@
+use std::io::Stdout;
 use std::io::{self, Write};
 use std::iter::repeat;
 use std::time::Duration;
 use time::{self, SteadyTime};
-use std::io::Stdout;
-use tty::{Width, terminal_size};
+use tty::{terminal_size, Width};
 
 macro_rules! kb_fmt {
     ($n: ident) => {{
@@ -13,19 +13,19 @@ macro_rules! kb_fmt {
             $n if $n >= kb.powf(3_f64) => format!("{:.*} GB", 2, $n / kb.powf(3_f64)),
             $n if $n >= kb.powf(2_f64) => format!("{:.*} MB", 2, $n / kb.powf(2_f64)),
             $n if $n >= kb => format!("{:.*} KB", 2, $n / kb),
-            _ => format!("{:.*} B", 0, $n)
+            _ => format!("{:.*} B", 0, $n),
         }
-    }}
+    }};
 }
 
 macro_rules! repeat {
     ($s: expr, $n: expr) => {{
         &repeat($s).take($n).collect::<String>()
-    }}
+    }};
 }
 
-const FORMAT: &'static str = "[=>-]";
-const TICK_FORMAT: &'static str = "\\|/-";
+const FORMAT: &str = "[=>-]";
+const TICK_FORMAT: &str = "\\|/-";
 const NANOS_PER_SEC: u32 = 1_000_000_000;
 
 // Output type format, indicate which format wil be used in
@@ -110,7 +110,7 @@ impl<T: Write> ProgressBar<T> {
     /// ```
     pub fn on(handle: T, total: u64) -> ProgressBar<T> {
         let mut pb = ProgressBar {
-            total: total,
+            total,
             current: 0,
             start_time: SteadyTime::now(),
             units: Units::Default,
@@ -134,7 +134,7 @@ impl<T: Write> ProgressBar<T> {
             message: String::new(),
             last_refresh_time: SteadyTime::now(),
             max_refresh_rate: None,
-            handle: handle,
+            handle,
         };
         pb.format(FORMAT);
         pb.tick_format(TICK_FORMAT);
@@ -214,7 +214,11 @@ impl<T: Write> ProgressBar<T> {
         if tick_fmt != TICK_FORMAT {
             self.show_tick = true;
         }
-        self.tick = tick_fmt.split("").map(|x| x.to_owned()).filter(|x| x != "").collect();
+        self.tick = tick_fmt
+            .split("")
+            .map(|x| x.to_owned())
+            .filter(|x| x != "")
+            .collect();
     }
 
     /// Set width, or `None` for default.
@@ -287,11 +291,11 @@ impl<T: Write> ProgressBar<T> {
     }
 
     /// Manually set the current value of the bar
-    /// 
+    ///
     /// # Examples
     /// ```no_run
     /// use pbr::ProgressBar;
-    /// 
+    ///
     /// let mut pb = ProgressBar::new(10);
     /// pb.set(8);
     /// pb.finish();
@@ -306,6 +310,7 @@ impl<T: Write> ProgressBar<T> {
         self.add(1)
     }
 
+    #[allow(clippy::cyclomatic_complexity)]
     fn draw(&mut self) {
         let now = SteadyTime::now();
         if let Some(mrr) = self.max_refresh_rate {
@@ -326,8 +331,8 @@ impl<T: Write> ProgressBar<T> {
         // precent box
         if self.show_percent {
             let percent = self.current as f64 / (self.total as f64 / 100f64);
-            suffix = suffix +
-                     &format!(" {:.*} % ", 2, if percent.is_nan() { 0.0 } else { percent });
+            suffix =
+                suffix + &format!(" {:.*} % ", 2, if percent.is_nan() { 0.0 } else { percent });
         }
         // speed box
         if self.show_speed {
@@ -337,28 +342,26 @@ impl<T: Write> ProgressBar<T> {
             };
         }
         // time left box
-        if self.show_time_left && self.current > 0 {
-            if self.total > self.current {
-                let left = 1. / speed * (self.total - self.current) as f64;
-                if left < 60. {
-                    suffix = suffix + &format!("{:.0}s", left);
-                } else {
-                    suffix = suffix + &format!("{:.0}m", left / 60.);
-                }
+        if self.show_time_left && self.current > 0 && self.total > self.current {
+            let left = 1. / speed * (self.total - self.current) as f64;
+            if left < 60. {
+                suffix = suffix + &format!("{:.0}s", left);
+            } else {
+                suffix = suffix + &format!("{:.0}m", left / 60.);
             }
         }
         // message box
         if self.show_message {
-            prefix = prefix + &format!("{}", self.message)
+            prefix = prefix + &self.message.to_string()
         }
         // counter box
         if self.show_counter {
             let (c, t) = (self.current as f64, self.total as f64);
-            prefix = prefix +
-                     &match self.units {
-                Units::Default => format!("{} / {} ", c, t),
-                Units::Bytes => format!("{} / {} ", kb_fmt!(c), kb_fmt!(t)),
-            };
+            prefix = prefix
+                + &match self.units {
+                    Units::Default => format!("{} / {} ", c, t),
+                    Units::Bytes => format!("{} / {} ", kb_fmt!(c), kb_fmt!(t)),
+                };
         }
         // tick box
         if self.show_tick {
@@ -369,16 +372,17 @@ impl<T: Write> ProgressBar<T> {
             let p = prefix.len() + suffix.len() + 3;
             if p < width {
                 let size = width - p;
-                let curr_count = ((self.current as f64 / self.total as f64) * size as f64)
-                    .ceil() as usize;
+                let curr_count =
+                    ((self.current as f64 / self.total as f64) * size as f64).ceil() as usize;
                 if size >= curr_count {
                     let rema_count = size - curr_count;
                     base = self.bar_start.clone();
                     if rema_count > 0 && curr_count > 0 {
-                        base = base + repeat!(self.bar_current.to_string(), curr_count - 1) +
-                               &self.bar_current_n;
+                        base = base
+                            + repeat!(self.bar_current.to_string(), curr_count - 1)
+                            + &self.bar_current_n;
                     } else {
-                        base = base + repeat!(self.bar_current.to_string(), curr_count);
+                        base += repeat!(self.bar_current.to_string(), curr_count);
                     }
                     base = base + repeat!(self.bar_remain.to_string(), rema_count) + &self.bar_end;
                 }
@@ -388,7 +392,7 @@ impl<T: Write> ProgressBar<T> {
         // pad
         if out.len() < width {
             let gap = width - out.len();
-            out = out + repeat!(" ", gap);
+            out += repeat!(" ", gap);
         }
         // print
         printfl!(self.handle, "\r{}", out);
@@ -426,19 +430,17 @@ impl<T: Write> ProgressBar<T> {
         printfl!(self.handle, "");
     }
 
-
     /// Call finish and write string `s` that will replace the progress bar.
     pub fn finish_print(&mut self, s: &str) {
         self.finish_draw();
         let width = self.width();
-        let mut out = format!("{}", s);
+        let mut out = s.to_string();
         if s.len() < width {
             out += repeat!(" ", width - s.len());
         };
         printfl!(self.handle, "\r{}", out);
         self.finish();
     }
-
 
     /// Call finish and write string `s` below the progress bar.
     ///
@@ -481,7 +483,9 @@ impl<T: Write> Write for ProgressBar<T> {
 fn time_to_std(d: time::Duration) -> Duration {
     if d > time::Duration::zero() {
         let secs = d.num_seconds();
-        let nsecs = (d - time::Duration::seconds(secs)).num_nanoseconds().unwrap();
+        let nsecs = (d - time::Duration::seconds(secs))
+            .num_nanoseconds()
+            .unwrap();
         Duration::new(secs as u64, nsecs as u32)
     } else {
         Duration::new(0, 1)
@@ -489,7 +493,7 @@ fn time_to_std(d: time::Duration) -> Duration {
 }
 
 fn fract_dur(d: Duration) -> f64 {
-    d.as_secs() as f64 + d.subsec_nanos() as f64 / NANOS_PER_SEC as f64
+    d.as_secs() as f64 + f64::from(d.subsec_nanos()) / f64::from(NANOS_PER_SEC)
 }
 
 #[cfg(test)]
@@ -501,8 +505,10 @@ mod test {
         let mut pb = ProgressBar::new(10);
         pb.add(2);
         assert!(pb.current == 2, "should add the given `n` to current");
-        assert!(pb.add(2) == pb.current,
-                "add should return the current value");
+        assert!(
+            pb.add(2) == pb.current,
+            "add should return the current value"
+        );
     }
 
     #[test]
@@ -517,8 +523,14 @@ mod test {
         let fmt = "[~> ]";
         let mut pb = ProgressBar::new(1);
         pb.format(fmt);
-        assert!(pb.bar_start + &pb.bar_current + &pb.bar_current_n + &pb.bar_remain +
-                &pb.bar_end == fmt);
+        assert!(
+            pb.bar_start.to_owned()
+                + &pb.bar_current
+                + &pb.bar_current_n
+                + &pb.bar_remain
+                + &pb.bar_end
+                == fmt
+        );
     }
 
     #[test]
