@@ -341,6 +341,12 @@ impl<T: Write> std::ops::Deref for MultiBar<T> {
     }
 }
 
+impl<T: Write> std::ops::DerefMut for MultiBar<T> {
+    fn deref_mut(&mut self) -> &mut MultiBarSender {
+        &mut self.mbs
+    }
+}
+
 pub struct Pipe {
     level: usize,
     sender: Sender<StateMessage>,
