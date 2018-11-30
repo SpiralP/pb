@@ -1,26 +1,92 @@
 use pb::ProgressBar;
+use std::collections::VecDeque;
 use std::io::{Result, Stdout, Write};
 use std::str::from_utf8;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 use tty::move_cursor_up;
 
-pub struct MultiBar<T: Write> {
-    nlines: usize,
-
-    lines: Vec<String>,
-
-    nbars: usize,
-
-    chan: (Sender<WriteMsg>, Receiver<WriteMsg>),
-
-    handle: T,
+// StateMessage is the message format used to communicate
+// between MultiBar and its bars
+#[derive(Debug)]
+enum StateMessage {
+    Message(String, usize),
+    Done(usize),
+    Println(String),
+    CreateBar,
+    Finish,
 }
 
-impl Default for MultiBar<Stdout> {
-    fn default() -> Self {
-        Self::new()
+pub struct MultiBarPrinter<T: Write> {
+    receiver: Receiver<StateMessage>,
+    handle: T,
+
+    nlines: usize,
+    nbars: usize,
+    lines: VecDeque<String>,
+    offset: usize,
+}
+impl<T: Write> MultiBarPrinter<T> {
+    pub fn listen(&mut self) {
+        loop {
+            // receive message
+            let msg = self.receiver.recv().unwrap();
+            match msg {
+                StateMessage::Message(message, level) => {
+                    self.lines[level - self.offset] = message;
+
+                    // and draw
+                    let mut out = String::new();
+                    let mut first = true;
+                    for l in self.lines.iter() {
+                        if first {
+                            out += &move_cursor_up(self.nlines);
+                            first = false;
+                        }
+                        out.push_str(&format!("\r{}\n", l));
+                    }
+                    printfl!(self.handle, "{}", out);
+                }
+                StateMessage::Done(level) => {
+                    self.nbars -= 1;
+                    self.lines[level - self.offset] = "".to_owned(); // mark line as useless
+
+                    // pop the first line if it is useless
+                    loop {
+                        if self.lines.get(0).map(|line| line == "").unwrap_or(false) {
+                            self.offset += 1;
+                            self.nlines -= 1;
+                            self.lines.pop_front();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                StateMessage::Println(s) => {
+                    self.lines.push_back(s);
+                    self.nlines += 1;
+                }
+                StateMessage::CreateBar => {
+                    self.lines.push_back("".to_owned());
+                    self.nlines += 1;
+                    self.nbars += 1;
+                    printfl!(self.handle, "\n");
+                }
+                StateMessage::Finish => {
+                    break;
+                }
+            }
+        }
     }
+}
+
+pub struct MultiBar<T: Write> {
+    nlines: usize,
+    nbars: usize,
+
+    sender: Sender<StateMessage>,
+
+    printer: Option<MultiBarPrinter<T>>,
 }
 
 impl MultiBar<Stdout> {
@@ -84,12 +150,19 @@ impl<T: Write> MultiBar<T> {
     /// // ...
     /// ```
     pub fn on(handle: T) -> MultiBar<T> {
+        let (sender, receiver) = mpsc::channel();
         MultiBar {
             nlines: 0,
             nbars: 0,
-            lines: Vec::new(),
-            chan: mpsc::channel(),
-            handle,
+            sender,
+            printer: Some(MultiBarPrinter {
+                receiver,
+                nlines: 0,
+                offset: 0,
+                nbars: 0,
+                lines: VecDeque::new(),
+                handle,
+            }),
         }
     }
 
@@ -121,8 +194,10 @@ impl<T: Write> MultiBar<T> {
     /// mb.listen();
     /// ```
     pub fn println(&mut self, s: &str) {
-        self.lines.push(s.to_owned());
         self.nlines += 1;
+        self.sender
+            .send(StateMessage::Println(s.to_owned()))
+            .unwrap();
     }
 
     /// create_bar creates new `ProgressBar` with `Pipe` as the writer.
@@ -157,12 +232,14 @@ impl<T: Write> MultiBar<T> {
     /// mb.listen();
     /// ```
     pub fn create_bar(&mut self, total: u64) -> ProgressBar<Pipe> {
-        self.println("");
+        self.nlines += 1;
         self.nbars += 1;
+        self.sender.send(StateMessage::CreateBar).unwrap();
+
         let mut p = ProgressBar::on(
             Pipe {
                 level: self.nlines - 1,
-                chan: self.chan.0.clone(),
+                sender: self.sender.clone(),
             },
             total,
         );
@@ -200,60 +277,65 @@ impl<T: Write> MultiBar<T> {
     /// // ...
     /// ```
     pub fn listen(&mut self) {
-        let mut first = true;
-        let mut nbars = self.nbars;
-        while nbars > 0 {
-            // receive message
-            let msg = self.chan.1.recv().unwrap();
-            if msg.done {
-                nbars -= 1;
-                continue;
-            }
-            self.lines[msg.level] = msg.string;
+        self.get_printer().listen();
+    }
 
-            // and draw
-            let mut out = String::new();
-            if !first {
-                out += &move_cursor_up(self.nlines);
-            } else {
-                first = false;
-            }
-            for l in self.lines.iter() {
-                out.push_str(&format!("\r{}\n", l));
-            }
-            printfl!(self.handle, "{}", out);
-        }
+    /// Get a MultiBarPrinter to allow adding more ProgressBars while listening
+    pub fn get_printer(&mut self) -> MultiBarPrinter<T> {
+        self.printer.take().unwrap()
+    }
+
+    /// Finish and stop printing
+    pub fn finish(&mut self) {
+        self.sender.send(StateMessage::Finish).unwrap();
+    }
+}
+
+impl Default for MultiBar<Stdout> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// impl<T: Write> Clone for MultiBar<T> {
+//     fn clone(&self) -> Self {
+//         MultiBar {
+//             nbars: self.nbars, // maybe make these atomic
+//             nlines: self.nlines,
+//             sender: self.sender.clone(),
+//             printer: None,
+//         }
+//     }
+// }
+
+impl<T: Write> Drop for MultiBar<T> {
+    fn drop(&mut self) {
+        self.sender.send(StateMessage::Finish).unwrap();
     }
 }
 
 pub struct Pipe {
     level: usize,
-    chan: Sender<WriteMsg>,
+    sender: Sender<StateMessage>,
 }
 
 impl Write for Pipe {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
         let s = from_utf8(buf).unwrap().to_owned();
-        self.chan
-            .send(WriteMsg {
-                // finish method emit empty string
-                done: s == "",
-                level: self.level,
-                string: s,
-            })
-            .unwrap();
-        Ok(1)
+
+        // finish method emits empty string
+        let msg = if s == "" {
+            StateMessage::Done(self.level)
+        } else {
+            StateMessage::Message(s, self.level)
+        };
+
+        self.sender.send(msg).unwrap();
+
+        Ok(buf.len())
     }
 
     fn flush(&mut self) -> Result<()> {
         Ok(())
     }
-}
-
-// WriteMsg is the message format used to communicate
-// between MultiBar and its bars
-struct WriteMsg {
-    done: bool,
-    level: usize,
-    string: String,
 }
