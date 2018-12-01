@@ -133,7 +133,7 @@ impl<T: Write> ProgressBar<T> {
             width: None,
             message: String::new(),
             last_refresh_time: SteadyTime::now(),
-            max_refresh_rate: None,
+            max_refresh_rate: Some(time::Duration::from_std(Duration::from_millis(100)).unwrap()),
             handle,
         };
         pb.format(FORMAT);
