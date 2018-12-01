@@ -482,6 +482,7 @@ impl<T: Write> Write for ProgressBar<T> {
 
 impl<T: Write> Drop for ProgressBar<T> {
     fn drop(&mut self) {
+        self.set_max_refresh_rate(None);
         self.finish();
     }
 }

@@ -5,7 +5,7 @@ use std::str::from_utf8;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
-use std::sync::RwLock;
+use std::sync::Mutex;
 use tty::move_cursor_up;
 
 // StateMessage is the message format used to communicate
@@ -14,6 +14,7 @@ use tty::move_cursor_up;
 enum StateMessage {
     ProgressMessage(String, usize),
     BarFinished(usize),
+    Finish,
 }
 
 // active, message
@@ -23,16 +24,18 @@ pub struct MultiBarPrinter<T: Write> {
     receiver: Receiver<StateMessage>,
     handle: T,
 
-    lines: Arc<RwLock<VecDeque<Line>>>,
+    lines: Arc<Mutex<VecDeque<Line>>>,
     offset: usize,
     last_len: usize,
 }
 impl<T: Write> MultiBarPrinter<T> {
-    pub fn listen(&mut self) {
+    // returns true if more bars could be added later
+    // false if all MultiBarSenders have been dropped
+    pub fn listen(&mut self) -> bool {
         loop {
             // receive message
             let msg = self.receiver.recv().unwrap();
-            let mut lines = self.lines.write().unwrap();
+            let mut lines = self.lines.lock().unwrap();
             let len = lines.len();
 
             // when new lines are added, print newlines to shift scrollback up
@@ -66,6 +69,13 @@ impl<T: Write> MultiBarPrinter<T> {
                     printfl!(self.handle, "{}", out);
                 }
                 StateMessage::BarFinished(level) => {
+                    debug_assert!(level >= self.offset, "{} >= {}", level, self.offset);
+                    debug_assert!(
+                        lines.get(level - self.offset).is_some(),
+                        "lines[{} - {}] is not some",
+                        level,
+                        self.offset
+                    );
                     debug_assert!(
                         lines[level - self.offset].0,
                         "BarFinished on an inactive line"
@@ -90,11 +100,15 @@ impl<T: Write> MultiBarPrinter<T> {
                     }
 
                     // if we have no more active progress bars
+                    // stop listening
                     if lines.iter().filter(|line| line.0).count() == 0 {
-                        // stop listening
-
-                        break;
+                        // re-print newlines when we start listening again
+                        self.last_len = 0;
+                        return true;
                     }
+                }
+                StateMessage::Finish => {
+                    return false;
                 }
             }
         }
@@ -103,9 +117,10 @@ impl<T: Write> MultiBarPrinter<T> {
 
 /// A clonable struct that acts the same as `MultiBar`, minus `listen()`
 pub struct MultiBarSender {
-    nlines: Arc<RwLock<usize>>,
-    lines: Arc<RwLock<VecDeque<Line>>>,
+    nlines: Arc<Mutex<usize>>,
+    lines: Arc<Mutex<VecDeque<Line>>>,
     sender: Sender<StateMessage>,
+    refs: Arc<()>,
 }
 
 impl MultiBarSender {
@@ -138,11 +153,11 @@ impl MultiBarSender {
     /// ```
     pub fn println(&mut self, s: &str) {
         self.lines
-            .write()
+            .lock()
             .unwrap()
             .push_back(Line(false, s.to_owned()));
 
-        *self.nlines.write().unwrap() += 1;
+        *self.nlines.lock().unwrap() += 1;
     }
 
     /// create_bar creates new `ProgressBar` with `Pipe` as the writer.
@@ -178,11 +193,11 @@ impl MultiBarSender {
     /// ```
     pub fn create_bar(&mut self, total: u64) -> ProgressBar<Pipe> {
         self.lines
-            .write()
+            .lock()
             .unwrap()
             .push_back(Line(true, "".to_owned()));
 
-        let mut nlines = self.nlines.write().unwrap();
+        let mut nlines = self.nlines.lock().unwrap();
         let level = *nlines;
         *nlines += 1;
 
@@ -205,6 +220,16 @@ impl Clone for MultiBarSender {
             nlines: self.nlines.clone(),
             lines: self.lines.clone(),
             sender: self.sender.clone(),
+            refs: self.refs.clone(),
+        }
+    }
+}
+
+impl Drop for MultiBarSender {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.refs) == 2 {
+            // we are the last cloned sender, other than the child of mb
+            self.sender.send(StateMessage::Finish).unwrap();
         }
     }
 }
@@ -276,13 +301,14 @@ impl<T: Write> MultiBar<T> {
     /// ```
     pub fn on(handle: T) -> MultiBar<T> {
         let (sender, receiver) = mpsc::channel();
-        let lines = Arc::new(RwLock::new(VecDeque::new()));
+        let lines = Arc::new(Mutex::new(VecDeque::new()));
 
         MultiBar {
             mbs: MultiBarSender {
-                nlines: Arc::new(RwLock::new(0)),
+                nlines: Arc::new(Mutex::new(0)),
                 lines: lines.clone(),
                 sender,
+                refs: Arc::new(()),
             },
             mbp: MultiBarPrinter {
                 receiver,
@@ -295,6 +321,7 @@ impl<T: Write> MultiBar<T> {
     }
 
     /// listen start listen to all bars changes.
+    /// returns false if all senders were cleaned up
     ///
     /// `ProgressBar` that finish its work, must call `finish()` (or `finish_print`)
     /// to notify the `MultiBar` about it.
@@ -322,8 +349,22 @@ impl<T: Write> MultiBar<T> {
     ///
     /// // ...
     /// ```
-    pub fn listen(&mut self) {
-        self.mbp.listen();
+    pub fn listen(&mut self) -> bool {
+        if self
+            .mbp
+            .lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|line| line.0)
+            .count()
+            == 0
+            && Arc::strong_count(&self.mbs.refs) == 1
+        {
+            // if there are no active ProgressBars, and no senders, do onthing
+            return false;
+        }
+        self.mbp.listen()
     }
 }
 
