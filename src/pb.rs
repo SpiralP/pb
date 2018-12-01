@@ -403,23 +403,11 @@ impl<T: Write> ProgressBar<T> {
     // finish_draw ensure that the progress bar is reached to its end, and do the
     // last drawing if needed.
     fn finish_draw(&mut self) {
-        let mut redraw = false;
+        self.current = self.total;
 
-        if let Some(mrr) = self.max_refresh_rate {
-            if SteadyTime::now() - self.last_refresh_time < mrr {
-                self.max_refresh_rate = None;
-                redraw = true;
-            }
-        }
+        self.max_refresh_rate = None;
+        self.draw();
 
-        if self.current < self.total {
-            self.current = self.total;
-            redraw = true;
-        }
-
-        if redraw {
-            self.draw();
-        }
         self.is_finish = true;
     }
 
@@ -482,7 +470,6 @@ impl<T: Write> Write for ProgressBar<T> {
 
 impl<T: Write> Drop for ProgressBar<T> {
     fn drop(&mut self) {
-        self.set_max_refresh_rate(None);
         self.finish();
     }
 }
