@@ -1,12 +1,11 @@
 use crate::pb::ProgressBar;
 use crate::tty::move_cursor_up;
+use crossbeam::channel::{self, Receiver, Sender};
+use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::io::{Result, Stdout, Write};
 use std::str::from_utf8;
-use std::sync::mpsc;
-use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
-use std::sync::Mutex;
 
 // StateMessage is the message format used to communicate
 // between MultiBar and its bars
@@ -35,7 +34,7 @@ impl<T: Write> MultiBarPrinter<T> {
         loop {
             // receive message
             let msg = self.receiver.recv().unwrap();
-            let mut lines = self.lines.lock().unwrap();
+            let mut lines = self.lines.lock();
             let len = lines.len();
 
             // when new lines are added, print newlines to shift scrollback up
@@ -152,12 +151,9 @@ impl MultiBarSender {
     /// mb.listen();
     /// ```
     pub fn println(&mut self, s: &str) {
-        self.lines
-            .lock()
-            .unwrap()
-            .push_back(Line(false, s.to_owned()));
+        self.lines.lock().push_back(Line(false, s.to_owned()));
 
-        *self.nlines.lock().unwrap() += 1;
+        *self.nlines.lock() += 1;
     }
 
     /// create_bar creates new `ProgressBar` with `Pipe` as the writer.
@@ -192,12 +188,9 @@ impl MultiBarSender {
     /// mb.listen();
     /// ```
     pub fn create_bar(&mut self, total: u64) -> ProgressBar<Pipe> {
-        self.lines
-            .lock()
-            .unwrap()
-            .push_back(Line(true, "".to_owned()));
+        self.lines.lock().push_back(Line(true, "".to_owned()));
 
-        let mut nlines = self.nlines.lock().unwrap();
+        let mut nlines = self.nlines.lock();
         let level = *nlines;
         *nlines += 1;
 
@@ -300,7 +293,7 @@ impl<T: Write> MultiBar<T> {
     /// // ...
     /// ```
     pub fn on(handle: T) -> MultiBar<T> {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = channel::unbounded();
         let lines = Arc::new(Mutex::new(VecDeque::new()));
 
         MultiBar {
@@ -350,15 +343,7 @@ impl<T: Write> MultiBar<T> {
     /// // ...
     /// ```
     pub fn listen(&mut self) -> bool {
-        if self
-            .mbp
-            .lines
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|line| line.0)
-            .count()
-            == 0
+        if self.mbp.lines.lock().iter().filter(|line| line.0).count() == 0
             && Arc::strong_count(&self.mbs.refs) == 1
         {
             // if there are no active ProgressBars, and no senders, do onthing
