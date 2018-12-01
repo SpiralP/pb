@@ -1,4 +1,4 @@
-extern crate termion;
+use termion;
 use super::{Height, Width};
 
 pub fn terminal_size() -> Option<(Width, Height)> {

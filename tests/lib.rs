@@ -1,5 +1,3 @@
-extern crate pbr;
-
 use pbr::{PbIter, ProgressBar};
 use std::thread;
 use std::time::Duration;
