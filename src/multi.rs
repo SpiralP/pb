@@ -1,4 +1,5 @@
-use pb::ProgressBar;
+use crate::pb::ProgressBar;
+use crate::tty::move_cursor_up;
 use std::collections::VecDeque;
 use std::io::{Result, Stdout, Write};
 use std::str::from_utf8;
@@ -6,7 +7,6 @@ use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::sync::Mutex;
-use tty::move_cursor_up;
 
 // StateMessage is the message format used to communicate
 // between MultiBar and its bars

@@ -1,6 +1,3 @@
-extern crate kernel32;
-extern crate winapi;
-
 use super::{Height, Width};
 
 /// Returns the size of the terminal, if available.
@@ -20,8 +17,8 @@ pub fn terminal_size() -> Option<(Width, Height)> {
 /// move the cursor `n` lines up; return an empty string, just to
 /// be aligned with the unix version.
 pub fn move_cursor_up(n: usize) -> String {
-    use self::kernel32::SetConsoleCursorPosition;
-    use self::winapi::COORD;
+    use winapi::um::wincon::SetConsoleCursorPosition;
+    use winapi::um::wincon::COORD;
     if let Some((hand, csbi)) = get_csbi() {
         unsafe {
             SetConsoleCursorPosition(
@@ -37,13 +34,15 @@ pub fn move_cursor_up(n: usize) -> String {
 }
 
 fn get_csbi() -> Option<(
-    self::winapi::HANDLE,
-    self::winapi::CONSOLE_SCREEN_BUFFER_INFO,
+    winapi::shared::ntdef::HANDLE,
+    winapi::um::wincon::CONSOLE_SCREEN_BUFFER_INFO,
 )> {
-    use self::kernel32::{GetConsoleScreenBufferInfo, GetStdHandle};
-    use self::winapi::HANDLE;
-    use self::winapi::STD_OUTPUT_HANDLE;
-    use self::winapi::{CONSOLE_SCREEN_BUFFER_INFO, COORD, SMALL_RECT};
+    use winapi::shared::ntdef::HANDLE;
+    use winapi::um::processenv::GetStdHandle;
+    use winapi::um::winbase::STD_OUTPUT_HANDLE;
+    use winapi::um::wincon::{
+        GetConsoleScreenBufferInfo, CONSOLE_SCREEN_BUFFER_INFO, COORD, SMALL_RECT,
+    };
 
     let hand: HANDLE = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
 

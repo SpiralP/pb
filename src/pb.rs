@@ -1,9 +1,9 @@
+use crate::tty::{terminal_size, Width};
 use std::io::Stdout;
 use std::io::{self, Write};
 use std::iter::repeat;
 use std::time::Duration;
 use time::{self, SteadyTime};
-use tty::{terminal_size, Width};
 
 macro_rules! kb_fmt {
     ($n: ident) => {{
@@ -505,7 +505,7 @@ fn fract_dur(d: Duration) -> f64 {
 
 #[cfg(test)]
 mod test {
-    use pb::ProgressBar;
+    use crate::pb::ProgressBar;
 
     #[test]
     fn add() {

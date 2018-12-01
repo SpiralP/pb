@@ -1,3 +1,5 @@
+#![deny(rust_2018_idioms)]
+
 //! # Terminal progress bar for Rust
 //!
 //! Console progress bar for Rust Inspired from [pb](http://github.com/cheggaaa/pb), support and
@@ -111,12 +113,11 @@ macro_rules! printfl {
     }}
 }
 
-extern crate time;
 mod multi;
 mod pb;
 mod tty;
-pub use multi::{MultiBar, MultiBarSender, Pipe};
-pub use pb::{ProgressBar, Units};
+pub use crate::multi::{MultiBar, MultiBarSender, Pipe};
+pub use crate::pb::{ProgressBar, Units};
 use std::io::{stdout, Stdout, Write};
 
 pub struct PbIter<T, I>
