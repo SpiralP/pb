@@ -9,15 +9,17 @@ use std::sync::Arc;
 
 // StateMessage is the message format used to communicate
 // between MultiBar and its bars
-#[derive(Debug)]
 enum StateMessage {
     ProgressMessage(String, usize),
     BarFinished(usize),
     Finish,
+    Reprint,
 }
 
-// active, message
-struct Line(bool, String);
+enum Line {
+    Flat(String),
+    Progress(String),
+}
 
 pub struct MultiBarPrinter<T: Write> {
     receiver: Receiver<StateMessage>,
@@ -27,10 +29,34 @@ pub struct MultiBarPrinter<T: Write> {
     offset: usize,
     last_len: usize,
 }
+
+fn print_lines<T: Write>(handle: &mut T, lines: &parking_lot::MutexGuard<'_, VecDeque<Line>>) {
+    let len = lines.len();
+
+    // print each line
+    let mut out = String::new();
+    let mut first = true;
+    for line in lines.iter() {
+        match line {
+            Line::Flat(message) | Line::Progress(message) => {
+                if first {
+                    out += &move_cursor_up(len);
+                    first = false;
+                }
+
+                out.push_str(&format!("{}\n", message));
+            }
+        }
+    }
+    printfl!(handle, "{}", out);
+}
+
 impl<T: Write> MultiBarPrinter<T> {
     // returns true if more bars could be added later
     // false if all MultiBarSenders have been dropped
     pub fn listen(&mut self) -> bool {
+        let mut changed = true;
+
         loop {
             // receive message
             let msg = self.receiver.recv().unwrap();
@@ -45,27 +71,61 @@ impl<T: Write> MultiBarPrinter<T> {
             }
             self.last_len = len;
 
-            match msg {
-                StateMessage::ProgressMessage(message, level) => {
-                    debug_assert!(
-                        lines[level - self.offset].0,
-                        "ProcessMessage on an inactive Line"
-                    );
+            if changed {
+                #[allow(unused_assignments)] // bug
+                {
+                    changed = false;
+                }
 
-                    lines[level - self.offset] = Line(true, message);
+                // there was a change, so reprint
+                print_lines(&mut self.handle, &lines);
 
-                    // print each line
-                    let mut out = String::new();
-                    let mut first = true;
-                    for Line(_active, message) in lines.iter() {
-                        if first {
-                            out += &move_cursor_up(len);
-                            first = false;
-                        }
-
-                        out.push_str(&format!("{}\n", message));
+                // pop the first line if it is useless
+                loop {
+                    if lines
+                        .get(0)
+                        .map(|line| match line {
+                            Line::Flat(_) => true,
+                            _ => false,
+                        })
+                        .unwrap_or(false)
+                    {
+                        self.offset += 1;
+                        lines.pop_front();
+                    } else {
+                        break;
                     }
-                    printfl!(self.handle, "{}", out);
+                }
+
+                // if we have no ProgressBar Lines
+                // stop listening
+                if lines
+                    .iter()
+                    .filter(|line| match line {
+                        Line::Progress(_) => true,
+                        _ => false,
+                    })
+                    .count()
+                    == 0
+                {
+                    // re-print newlines when we start listening again
+                    self.last_len = 0;
+                    return true;
+                }
+            }
+
+            match msg {
+                StateMessage::Reprint => {
+                    changed = true;
+                }
+                StateMessage::ProgressMessage(message, level) => {
+                    if let Line::Flat(_) = lines[level - self.offset] {
+                        debug_assert!(false, "ProcessMessage on a Flat Line!");
+                    }
+
+                    lines[level - self.offset] = Line::Progress(message);
+
+                    changed = true;
                 }
                 StateMessage::BarFinished(level) => {
                     debug_assert!(level >= self.offset, "{} >= {}", level, self.offset);
@@ -75,38 +135,21 @@ impl<T: Write> MultiBarPrinter<T> {
                         level,
                         self.offset
                     );
-                    debug_assert!(
-                        lines[level - self.offset].0,
-                        "BarFinished on an inactive line"
-                    );
-
-                    let message = lines[level - self.offset].1.to_owned();
-                    // mark line as useless
-                    lines[level - self.offset] = Line(false, message);
-
-                    // pop the first line if it is useless
-                    loop {
-                        if lines
-                            .get(0)
-                            .map(|Line(active, _message)| !active)
-                            .unwrap_or(false)
-                        {
-                            self.offset += 1;
-                            lines.pop_front();
-                        } else {
-                            break;
-                        }
+                    if let Line::Flat(_) = lines[level - self.offset] {
+                        debug_assert!(false, "BarFinished on a Flat Line!");
                     }
 
-                    // if we have no more active progress bars
-                    // stop listening
-                    if lines.iter().filter(|line| line.0).count() == 0 {
-                        // re-print newlines when we start listening again
-                        self.last_len = 0;
-                        return true;
-                    }
+                    let message = match &lines[level - self.offset] {
+                        Line::Flat(message) | Line::Progress(message) => message.to_owned(),
+                    };
+
+                    // mark line as "flat" since it will not receive anymore updates
+                    lines[level - self.offset] = Line::Flat(message);
+
+                    changed = true;
                 }
                 StateMessage::Finish => {
+                    // all references to this printer have been lost
                     return false;
                 }
             }
@@ -151,9 +194,10 @@ impl MultiBarSender {
     /// mb.listen();
     /// ```
     pub fn println(&mut self, s: &str) {
-        self.lines.lock().push_back(Line(false, s.to_owned()));
-
+        self.lines.lock().push_back(Line::Flat(s.to_owned()));
         *self.nlines.lock() += 1;
+
+        self.sender.send(StateMessage::Reprint).unwrap();
     }
 
     /// create_bar creates new `ProgressBar` with `Pipe` as the writer.
@@ -188,11 +232,13 @@ impl MultiBarSender {
     /// mb.listen();
     /// ```
     pub fn create_bar(&mut self, total: u64) -> ProgressBar<Pipe> {
-        self.lines.lock().push_back(Line(true, "".to_owned()));
+        self.lines.lock().push_back(Line::Progress("".to_owned()));
 
         let mut nlines = self.nlines.lock();
         let level = *nlines;
         *nlines += 1;
+
+        self.sender.send(StateMessage::Reprint).unwrap();
 
         let mut p = ProgressBar::on(
             Pipe {
@@ -343,10 +389,8 @@ impl<T: Write> MultiBar<T> {
     /// // ...
     /// ```
     pub fn listen(&mut self) -> bool {
-        if self.mbp.lines.lock().iter().filter(|line| line.0).count() == 0
-            && Arc::strong_count(&self.mbs.refs) == 1
-        {
-            // if there are no active ProgressBars, and no senders, do onthing
+        if self.mbp.lines.lock().is_empty() && Arc::strong_count(&self.mbs.refs) == 1 {
+            // if there are lines to print, and no senders, do nothing
             return false;
         }
         self.mbp.listen()
