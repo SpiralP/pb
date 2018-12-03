@@ -55,8 +55,6 @@ impl<T: Write> MultiBarPrinter<T> {
     // returns true if more bars could be added later
     // false if all MultiBarSenders have been dropped
     pub fn listen(&mut self) -> bool {
-        let mut changed = true;
-
         loop {
             // receive message
             let msg = self.receiver.recv().unwrap();
@@ -71,61 +69,52 @@ impl<T: Write> MultiBarPrinter<T> {
             }
             self.last_len = len;
 
-            if changed {
-                #[allow(unused_assignments)] // bug
-                {
-                    changed = false;
-                }
+            // there was a change, so reprint
+            print_lines(&mut self.handle, &lines);
 
-                // there was a change, so reprint
-                print_lines(&mut self.handle, &lines);
-
-                // pop the first line if it is useless
-                loop {
-                    if lines
-                        .get(0)
-                        .map(|line| match line {
-                            Line::Flat(_) => true,
-                            _ => false,
-                        })
-                        .unwrap_or(false)
-                    {
-                        self.offset += 1;
-                        lines.pop_front();
-                    } else {
-                        break;
-                    }
-                }
-
-                // if we have no ProgressBar Lines
-                // stop listening
+            // pop the first line if it is flat
+            loop {
                 if lines
-                    .iter()
-                    .filter(|line| match line {
-                        Line::Progress(_) => true,
+                    .get(0)
+                    .map(|line| match line {
+                        Line::Flat(_) => true,
                         _ => false,
                     })
-                    .count()
-                    == 0
+                    .unwrap_or(false)
                 {
-                    // re-print newlines when we start listening again
-                    self.last_len = 0;
-                    return true;
+                    self.offset += 1;
+                    lines.pop_front();
+                } else {
+                    break;
                 }
             }
 
+            // if we have no ProgressBar Lines
+            // stop listening
+            if lines
+                .iter()
+                .filter(|line| match line {
+                    Line::Progress(_) => true,
+                    _ => false,
+                })
+                .count()
+                == 0
+            {
+                // re-print newlines when we start listening again
+                self.last_len = 0;
+
+                // true to mean we could still add more ProgressBars in the future
+                return true;
+            }
+
             match msg {
-                StateMessage::Reprint => {
-                    changed = true;
-                }
+                StateMessage::Reprint => {}
                 StateMessage::ProgressMessage(message, level) => {
-                    if let Line::Flat(_) = lines[level - self.offset] {
+                    if let Line::Flat(_) = &lines[level - self.offset] {
                         debug_assert!(false, "ProcessMessage on a Flat Line!");
                     }
 
                     lines[level - self.offset] = Line::Progress(message);
-
-                    changed = true;
                 }
                 StateMessage::BarFinished(level) => {
                     debug_assert!(level >= self.offset, "{} >= {}", level, self.offset);
@@ -135,18 +124,14 @@ impl<T: Write> MultiBarPrinter<T> {
                         level,
                         self.offset
                     );
-                    if let Line::Flat(_) = lines[level - self.offset] {
-                        debug_assert!(false, "BarFinished on a Flat Line!");
-                    }
 
                     let message = match &lines[level - self.offset] {
-                        Line::Flat(message) | Line::Progress(message) => message.to_owned(),
+                        Line::Progress(message) => message.to_owned(),
+                        _ => unreachable!("BarFinished on a non-Progress Line"),
                     };
 
                     // mark line as "flat" since it will not receive anymore updates
                     lines[level - self.offset] = Line::Flat(message);
-
-                    changed = true;
                 }
                 StateMessage::Finish => {
                     // all references to this printer have been lost
